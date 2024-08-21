@@ -97,7 +97,7 @@ class OpenAIPredictor:
         return batch
 
 
-@task(container_image=container_image, task_config=None, enable_deck=True)
+@task(container_image=container_image, task_config=anyscale_config, enable_deck=True)
 def batch_inference(issues: typing.List[Document], vector_database: FlyteDirectory):
     questions = [issue.page_content for issue in issues]
     ds = ray.data.from_numpy(np.asarray(questions))
