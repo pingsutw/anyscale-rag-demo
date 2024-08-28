@@ -112,8 +112,19 @@ def process_shard(shard) -> VST:
     return result
 
 
+class EmbedChunks:
+    def __init__(self):
+        self.embedding_model = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-mpnet-base-v2"
+        )
+
+    def __call__(self, batch: typing.Dict[str, np.ndarray]) -> typing.Dict[str, list]:
+        results = FAISS.from_documents(batch["data"], self.embedding_model)
+        return {"embeddings": [results]}
+
+
 @task(task_config=anyscale_config, container_image=container_image)
-def create_vector_db(
+def embedding_generation(
     flytekit_code: List[Document],
     flyte_code: List[Document],
     flyte_document: List[Document],
@@ -121,11 +132,17 @@ def create_vector_db(
 ) -> FlyteDirectory:
     docs = flytekit_code + flyte_code + flyte_document + slack
     shards = np.array_split(docs, db_shards)
-    futures = [process_shard.remote(shards[i]) for i in range(db_shards)]
-    results = ray.get(futures)
-    db = results[0]
-    for i in range(1, db_shards):
-        db.merge_from(results[i])
+    ds = ray.data.from_numpy(shards)
+    res = ds.map_batches(
+        EmbedChunks,
+        num_gpus=0,
+        batch_size=1000,
+        concurrency=2,
+    ).take_all()
+
+    db = res[0]["embeddings"]
+    for i in range(1, len(res)):
+        db.merge_from(res[i]["embeddings"])
     db.save_local(FAISS_INDEX_PATH)
     return FAISS_INDEX_PATH
 
@@ -138,4 +155,4 @@ def wf() -> FlyteDirectory:
     flyte_code = load_flyte_code(repo=flyte_repo, chunk_size=2000)
     flyte_document = load_flyte_document(repo=flyte_repo, chunk_size=2000)
     slack = load_slack_data(path="slack.zip", chunk_size=2000)
-    return create_vector_db(flytekit_code, flyte_code, flyte_document, slack)
+    return embedding_generation(flytekit_code, flyte_code, flyte_document, slack)

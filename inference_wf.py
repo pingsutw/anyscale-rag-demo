@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Dict
 
 import numpy as np
+from langchain_community.llms.vllm import VLLM
 from markdown_it import MarkdownIt
 import flytekit
 from flytekit import task, workflow
@@ -18,7 +19,8 @@ from langchain_core.prompts import PromptTemplate
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.runnables import RunnablePassthrough
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI  # noqa: F401
+
 
 """
 To run this workflow locally, you need to have the following environment variables set:
@@ -36,7 +38,7 @@ container_image = "pingsutw/rag-demo:latest"
 
 @task(cache_version="1", cache=True, container_image=container_image)
 def load_github_issues() -> typing.List[Document]:
-    since = datetime.now() - timedelta(days=1)
+    since = datetime.now() - timedelta(days=3)
 
     loader = GitHubIssuesLoader(
         repo="flyteorg/flyte",
@@ -47,7 +49,7 @@ def load_github_issues() -> typing.List[Document]:
         include_prs=False,
     )
     data = loader.load()
-    return data
+    return data[:3]
 
 
 class OpenAIPredictor:
@@ -60,7 +62,16 @@ class OpenAIPredictor:
             allow_dangerous_deserialization=True,
         )
         retriever = db.as_retriever()
-        llm = ChatOpenAI(model="gpt-4o")
+        os.environ["HF_TOKEN"] = "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"
+        # llm = ChatOpenAI(model="gpt-4o")
+        llm = VLLM(
+            model="nomic-ai/gpt4all-j",
+            trust_remote_code=True,  # mandatory for hf models
+            max_new_tokens=128,
+            top_k=10,
+            top_p=0.95,
+            temperature=0.8,
+        )
 
         def format_docs(docs):
             return "\n\n".join(doc.page_content for doc in docs)
@@ -97,13 +108,13 @@ class OpenAIPredictor:
         return batch
 
 
-@task(container_image=container_image, task_config=anyscale_config, enable_deck=True)
+@task(container_image=container_image, task_config=None, enable_deck=True)
 def batch_inference(issues: typing.List[Document], vector_database: FlyteDirectory):
     questions = [issue.page_content for issue in issues]
     ds = ray.data.from_numpy(np.asarray(questions))
     predictions = ds.map_batches(
         OpenAIPredictor,
-        num_gpus=0,
+        num_gpus=1,
         batch_size=1,
         concurrency=2,
         fn_constructor_kwargs={"vector_database": vector_database},
