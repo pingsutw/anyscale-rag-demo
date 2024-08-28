@@ -62,7 +62,6 @@ class OpenAIPredictor:
             allow_dangerous_deserialization=True,
         )
         retriever = db.as_retriever()
-        os.environ["HF_TOKEN"] = "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"
         # llm = ChatOpenAI(model="gpt-4o")
         llm = VLLM(
             model="nomic-ai/gpt4all-j",
