@@ -38,7 +38,7 @@ container_image = "pingsutw/rag-demo:latest"
 
 @task(cache_version="1", cache=True, container_image=container_image)
 def load_github_issues() -> typing.List[Document]:
-    since = datetime.now() - timedelta(days=3)
+    since = datetime.now() - timedelta(days=1)
 
     loader = GitHubIssuesLoader(
         repo="flyteorg/flyte",
@@ -49,7 +49,7 @@ def load_github_issues() -> typing.List[Document]:
         include_prs=False,
     )
     data = loader.load()
-    return data[:3]
+    return data
 
 
 class OpenAIPredictor:
