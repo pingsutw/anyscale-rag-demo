@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Dict
 
 import numpy as np
+from langchain_community.llms.vllm import VLLM
 from markdown_it import MarkdownIt
 import flytekit
 from flytekit import task, workflow
@@ -18,7 +19,8 @@ from langchain_core.prompts import PromptTemplate
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.runnables import RunnablePassthrough
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI  # noqa: F401
+
 
 """
 To run this workflow locally, you need to have the following environment variables set:
@@ -60,7 +62,15 @@ class OpenAIPredictor:
             allow_dangerous_deserialization=True,
         )
         retriever = db.as_retriever()
-        llm = ChatOpenAI(model="gpt-4o")
+        # llm = ChatOpenAI(model="gpt-4o")
+        llm = VLLM(
+            model="nomic-ai/gpt4all-j",
+            trust_remote_code=True,  # mandatory for hf models
+            max_new_tokens=128,
+            top_k=10,
+            top_p=0.95,
+            temperature=0.8,
+        )
 
         def format_docs(docs):
             return "\n\n".join(doc.page_content for doc in docs)
@@ -103,7 +113,7 @@ def batch_inference(issues: typing.List[Document], vector_database: FlyteDirecto
     ds = ray.data.from_numpy(np.asarray(questions))
     predictions = ds.map_batches(
         OpenAIPredictor,
-        num_gpus=0,
+        num_gpus=1,
         batch_size=1,
         concurrency=2,
         fn_constructor_kwargs={"vector_database": vector_database},

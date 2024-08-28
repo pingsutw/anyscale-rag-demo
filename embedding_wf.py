@@ -1,4 +1,4 @@
-import shutil
+import typing
 from typing import List
 
 from git import Repo
@@ -16,7 +16,7 @@ from langchain_text_splitters import (
     CharacterTextSplitter,
 )
 
-from flytekit import task, workflow
+from flytekit import task, workflow, FlyteContext
 from flytekit.types.directory import FlyteDirectory
 from flytekit.types.file import FlyteFile
 
@@ -30,14 +30,24 @@ container_image = "pingsutw/rag-demo:latest"
 
 
 @task(cache_version="1", cache=True, container_image=container_image)
-def load_flytekit_repos(chunk_size: int) -> List[Document]:
+def download_data() -> typing.Tuple[FlyteDirectory, FlyteDirectory]:
+    ctx = FlyteContext.current_context()
+
+    url = "https://github.com/flyteorg/flyte.git"
+    flyte_repo = ctx.file_access.get_random_local_directory()
+    Repo.clone_from(url, to_path=flyte_repo)
+
     url = "https://github.com/flyteorg/flytekit.git"
-    name = "flytekit"
-    local_path = f"/tmp/{name}"
-    shutil.rmtree(local_path, ignore_errors=True)
-    Repo.clone_from(url, to_path=local_path)
+    flytekit_repo = ctx.file_access.get_random_local_directory()
+    Repo.clone_from(url, to_path=flytekit_repo)
+
+    return flyte_repo, flytekit_repo
+
+
+@task(cache_version="1", cache=True, container_image=container_image)
+def load_flytekit_code(repo: FlyteDirectory, chunk_size: int) -> List[Document]:
     docs = GitLoader(
-        repo_path=local_path,
+        repo_path=repo,
         branch="master",
         file_filter=lambda file_path: file_path.endswith(".py"),
     ).load()
@@ -45,19 +55,14 @@ def load_flytekit_repos(chunk_size: int) -> List[Document]:
         chunk_size=chunk_size, chunk_overlap=200
     ).from_language(Language.PYTHON)
     documents = text_splitter.split_documents(docs)
-    print(f"Loaded {len(documents)} documents from FlyteKit repo")
+    print(f"Loaded {len(documents)} documents from FlyteKit repository")
     return documents
 
 
 @task(cache_version="1", cache=True, container_image=container_image)
-def load_flyte_repos(chunk_size: int) -> List[Document]:
-    url = "https://github.com/flyteorg/flyte.git"
-    name = "flyte"
-    local_path = f"/tmp/{name}"
-    shutil.rmtree(local_path, ignore_errors=True)
-    Repo.clone_from(url, to_path=local_path)
+def load_flyte_code(repo: FlyteDirectory, chunk_size: int) -> List[Document]:
     docs = GitLoader(
-        repo_path=local_path,
+        repo_path=repo,
         branch="master",
         file_filter=lambda file_path: file_path.endswith(".go"),
     ).load()
@@ -65,7 +70,22 @@ def load_flyte_repos(chunk_size: int) -> List[Document]:
         chunk_size=chunk_size, chunk_overlap=200
     ).from_language(Language.GO)
     documents = text_splitter.split_documents(docs)
-    print(f"Loaded {len(documents)} documents from Flyte repo")
+    print(f"Loaded {len(documents)} documents from Flyte repository")
+    return documents
+
+
+@task(cache_version="1", cache=True, container_image=container_image)
+def load_flyte_document(repo: FlyteDirectory, chunk_size: int) -> List[Document]:
+    docs = GitLoader(
+        repo_path=repo,
+        branch="master",
+        file_filter=lambda file_path: file_path.endswith(".rst"),
+    ).load()
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size, chunk_overlap=200
+    ).from_language(Language.RST)
+    documents = text_splitter.split_documents(docs)
+    print(f"Loaded {len(documents)} documents from Flyte documents")
     return documents
 
 
@@ -92,23 +112,47 @@ def process_shard(shard) -> VST:
     return result
 
 
+class EmbedChunks:
+    def __init__(self):
+        self.embedding_model = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-mpnet-base-v2"
+        )
+
+    def __call__(self, batch: typing.Dict[str, np.ndarray]) -> typing.Dict[str, list]:
+        results = FAISS.from_documents(batch["data"], self.embedding_model)
+        return {"embeddings": [results]}
+
+
 @task(task_config=anyscale_config, container_image=container_image)
-def create_vector_db(
-    flytekit: List[Document], flyte: List[Document], slack: List[Document]
+def embedding_generation(
+    flytekit_code: List[Document],
+    flyte_code: List[Document],
+    flyte_document: List[Document],
+    slack: List[Document],
 ) -> FlyteDirectory:
-    shards = np.array_split(flytekit + flyte + slack, db_shards)
-    futures = [process_shard.remote(shards[i]) for i in range(db_shards)]
-    results = ray.get(futures)
-    db = results[0]
-    for i in range(1, db_shards):
-        db.merge_from(results[i])
+    docs = flytekit_code + flyte_code + flyte_document + slack
+    shards = np.array_split(docs, db_shards)
+    ds = ray.data.from_numpy(shards)
+    res = ds.map_batches(
+        EmbedChunks,
+        num_gpus=0,
+        batch_size=1000,
+        concurrency=2,
+    ).take_all()
+
+    db = res[0]["embeddings"]
+    for i in range(1, len(res)):
+        db.merge_from(res[i]["embeddings"])
     db.save_local(FAISS_INDEX_PATH)
     return FAISS_INDEX_PATH
 
 
 @workflow
 def wf() -> FlyteDirectory:
-    flytekit = load_flytekit_repos(chunk_size=2000)
-    flyte = load_flyte_repos(chunk_size=2000)
+    flyte_repo, flytekit_repo = download_data()
+
+    flytekit_code = load_flytekit_code(repo=flytekit_repo, chunk_size=2000)
+    flyte_code = load_flyte_code(repo=flyte_repo, chunk_size=2000)
+    flyte_document = load_flyte_document(repo=flyte_repo, chunk_size=2000)
     slack = load_slack_data(path="slack.zip", chunk_size=2000)
-    return create_vector_db(flytekit, flyte, slack)
+    return embedding_generation(flytekit_code, flyte_code, flyte_document, slack)
