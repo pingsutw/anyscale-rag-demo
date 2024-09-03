@@ -1,3 +1,4 @@
+import json
 import os
 import ray
 import typing
@@ -5,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Dict
 
 import numpy as np
+import requests
 from langchain_community.llms.vllm import VLLM
 from markdown_it import MarkdownIt
 import flytekit
@@ -25,10 +27,9 @@ from langchain_openai import ChatOpenAI  # noqa: F401
 """
 To run this workflow locally, you need to have the following environment variables set:
 
-    export ANYSCALE_CLI_TOKEN=...
     export ANYSCALE_API_KEY=...
     export GITHUB_PERSONAL_ACCESS_TOKEN=...
-    export OPENAI_API_KEY=...
+    export GITHUB_BOT_ACCESS_TOKEN=...
 """
 
 GITHUB_PERSONAL_ACCESS_TOKEN = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
@@ -52,7 +53,7 @@ def load_github_issues() -> typing.List[Document]:
     return data
 
 
-class OpenAIPredictor:
+class LlamaPredictor:
     def __init__(self, vector_database: FlyteDirectory):
         vector_database.download()
 
@@ -63,13 +64,11 @@ class OpenAIPredictor:
         )
         retriever = db.as_retriever()
         # llm = ChatOpenAI(model="gpt-4o")
+        # https://python.langchain.com/v0.2/docs/integrations/llms/vllm/
         llm = VLLM(
-            model="nomic-ai/gpt4all-j",
+            model="meta-llama/Meta-Llama-3.1-70B",
             trust_remote_code=True,  # mandatory for hf models
-            max_new_tokens=128,
-            top_k=10,
-            top_p=0.95,
-            temperature=0.8,
+            max_new_tokens=512,
         )
 
         def format_docs(docs):
@@ -112,14 +111,15 @@ def batch_inference(issues: typing.List[Document], vector_database: FlyteDirecto
     questions = [issue.page_content for issue in issues]
     ds = ray.data.from_numpy(np.asarray(questions))
     predictions = ds.map_batches(
-        OpenAIPredictor,
-        num_gpus=1,
-        batch_size=1,
+        LlamaPredictor,
+        num_gpus=0,
+        batch_size=256,
         concurrency=2,
         fn_constructor_kwargs={"vector_database": vector_database},
     )
 
     answers = predictions.take_all()
+
     for i in range(len(answers)):
         issue_number = issues[i].metadata["url"].split("/")[-1]
         if answers[i]["output"]["source"]:
@@ -134,6 +134,20 @@ def batch_inference(issues: typing.List[Document], vector_database: FlyteDirecto
         This is an AI-generated response and your feedback is appreciated! Please leave a 👍 if this is helpful and 👎 if it is not.
         """
         flytekit.Deck(f"Issue {issue_number}", response)
+
+        leave_comments(issue_number, answers[i]["output"]["answer"])
+
+
+def leave_comments(issue_number: str, response: str):
+    headers = {
+        "accept": "application/vnd.github+json",
+        "Authorization": "Bearer " + os.getenv("GITHUB_BOT_ACCESS_TOKEN"),
+    }
+    requests.post(
+        url=f"https://api.github.com/repos/flyteorg/flyte/issues/{issue_number}/comments",
+        data=json.dumps({"body": response}),
+        headers=headers,
+    )
 
 
 @workflow

@@ -5,6 +5,8 @@ By utilizing Flyte for orchestrating workflows and Ray for distributed computing
 this bot can provide intelligent suggestions, automate responses, and even 
 suggest code fixes.
 
+![github_response.png](images/github_response.png)
+
 
 ## Features
 - Automated Issue Suggestions: Automatically suggest solutions for common issues.
