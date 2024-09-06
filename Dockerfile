@@ -5,8 +5,8 @@ RUN pip install emoji langchain langchain-community \
                 langchain_openai gitpython \
                 langchain-huggingface langchainhub einops vllm
 
-RUN pip install "git+https://github.com/flyteorg/flytekit.git@d87c8227663aac246f21229106d9ccf456d6ac68" \
-                "git+https://github.com/flyteorg/flytekit.git@d87c8227663aac246f21229106d9ccf456d6ac68#subdirectory=plugins/flytekit-ray"
+RUN pip install "git+https://github.com/flyteorg/flytekit.git@d7e684202dc54a6e8f929e19aeda0053aea130ae" \
+                "git+https://github.com/flyteorg/flytekit.git@d7e684202dc54a6e8f929e19aeda0053aea130ae#subdirectory=plugins/flytekit-ray"
 RUN pip install faiss-gpu
 
 ENV PYTHONPATH=.

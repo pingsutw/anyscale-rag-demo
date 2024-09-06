@@ -92,7 +92,7 @@ def load_flyte_document(repo: FlyteDirectory, chunk_size: int) -> List[Document]
 @task(cache_version="1", cache=True, container_image=container_image)
 def load_slack_data(path: FlyteFile, chunk_size: int) -> List[Document]:
     loader = SlackDirectoryLoader(zip_path=path)
-    raw_documents = loader.load()
+    raw_documents = loader.load()[:10]
     text_splitter = CharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=200)
     documents = text_splitter.split_documents(raw_documents)
     print(f"Loaded {len(documents)} documents from {path}")
@@ -135,7 +135,7 @@ def embedding_generation(
     ds = ray.data.from_numpy(shards)
     res = ds.map_batches(
         EmbedChunks,
-        num_gpus=0,
+        num_gpus=2,
         batch_size=1000,
         concurrency=2,
     ).take_all()
